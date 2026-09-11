@@ -183,6 +183,14 @@
 
   <div class="kpi-row" id="kpiRow"></div>
 
+  <section id="qaSection">
+    <div class="section-head">
+      <h2>Quality assurance</h2>
+      <div class="section-note">From QA ticket reviews, blended by ticket volume when "All Agents (blended)" is selected</div>
+    </div>
+    <div class="kpi-row" id="qaKpiRow"></div>
+  </section>
+
   <section id="trendsSection">
     <div class="section-head">
       <h2 id="trendsTitle">Trends</h2>
@@ -193,6 +201,10 @@
       <div class="chart-box"><h3>Tickets closed</h3><canvas id="closedChart"></canvas></div>
       <div class="chart-box"><h3>Resolution time (hrs)</h3><canvas id="resChart"></canvas></div>
       <div class="chart-box"><h3>Human response time (hrs)</h3><canvas id="humanChart"></canvas></div>
+    </div>
+    <div class="chart-grid" style="margin-top:18px;">
+      <div class="chart-box"><h3>Messages sent</h3><canvas id="messagesChart"></canvas></div>
+      <div class="chart-box"><h3>Messages sent vs tickets closed</h3><canvas id="messagesVsClosedChart"></canvas></div>
     </div>
   </section>
 
@@ -241,6 +253,7 @@ const LOGO_WHITE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAWoAAABsCAYAAA
 function parseCsv(text){ return new Promise((resolve)=>{ Papa.parse(text,{header:true,skipEmptyLines:true,complete:(res)=>resolve(res.data)}); }); }
 async function fetchTab(sheetName){ const res=await fetch(csvUrl(sheetName)); if(!res.ok) throw new Error(`Could not load "${sheetName}" (HTTP ${res.status})`); return parseCsv(await res.text()); }
 function toNumber(v){ if(v===undefined||v===null||v==='') return null; const n=Number(String(v).replace(/,/g,'')); return isNaN(n)?null:n; }
+function toPercent(v){ if(v===undefined||v===null||v==='') return null; const n=Number(String(v).replace(/,/g,'').replace(/%/g,'')); return isNaN(n)?null:n; }
 function parseDMY(str){ if(!str) return null; const [d,m,y]=str.split('/').map(Number); if(!d||!m||!y) return null; return new Date(y,m-1,d); }
 function palette(){ const s=getComputedStyle(document.documentElement); const v=(n)=>s.getPropertyValue(n).trim(); return { accent:v('--accent'), gold:v('--gold'), rust:v('--rust'), green:v('--green'), soft:v('--ink-soft'), line:v('--line'), ink:v('--ink'), panel:v('--panel'), muted:v('--muted-bar') }; }
 function thinTicks(){ return { autoSkip:true, maxTicksLimit:8, maxRotation:0, minRotation:0 }; }
@@ -266,6 +279,12 @@ const METRICS = [
   { key:'resAvg',   label:'Resolution time',         unit:'hrs',decimals:1, higherIsBetter:false, agg:'mean' },
   { key:'humanAvg', label:'Human response time',     unit:'hrs',decimals:1, higherIsBetter:false, agg:'mean' },
   { key:'closed',   label:'Tickets closed',          unit:'',   decimals:0, higherIsBetter:null,  agg:'sum'  },
+  { key:'messagesSent', label:'Messages sent',       unit:'',   decimals:0, higherIsBetter:null,  agg:'sum'  },
+];
+const QA_METRICS = [
+  { key:'qaResComp', label:'QA — Resolution completeness', unit:'%', decimals:1, higherIsBetter:true, agg:'mean' },
+  { key:'qaComm',    label:'QA — Communication skills',     unit:'',  decimals:2, higherIsBetter:true, agg:'mean' },
+  { key:'qaLang',    label:'QA — Language proficiency',     unit:'',  decimals:2, higherIsBetter:true, agg:'mean' },
 ];
 // ---- STATE ---------------------------------------------------------------
 let normalizedRows = [];
@@ -322,6 +341,12 @@ function buildAllAggSeries(){
       humanAvg: wmean('humanAvg','closed'),
       humanMed: aggregateArray(rows.map(r=>r.humanMed),'mean'),
       closed: closedSum, scored: scoredSum, sent: sentSum,
+      // QA scores are per-agent ratings, not additive — blend them weighted by ticket volume (closed) so a
+      // agent who handled more tickets has proportionally more say in the team-wide QA figure.
+      qaResComp: wmean('qaResComp','closed'),
+      qaComm: wmean('qaComm','closed'),
+      qaLang: wmean('qaLang','closed'),
+      messagesSent: rows.reduce((s,r)=>s+(r.messagesSent||0),0),
     };
   });
 }
@@ -330,7 +355,8 @@ function buildTeamAvgSeries(){
     const rows = agentsList.map(a=>rowsByWeekAgent[w.key]?.[a]).filter(Boolean);
     if(!rows.length) return null;
     const m = (field)=>aggregateArray(rows.map(r=>r[field]),'mean');
-    return { csatAvg:m('csatAvg'), csatPct:m('csatPct'), respRate:m('respRate'), resAvg:m('resAvg'), resMed:m('resMed'), humanAvg:m('humanAvg'), humanMed:m('humanMed'), closed:m('closed'), scored:m('scored'), sent:m('sent') };
+    return { csatAvg:m('csatAvg'), csatPct:m('csatPct'), respRate:m('respRate'), resAvg:m('resAvg'), resMed:m('resMed'), humanAvg:m('humanAvg'), humanMed:m('humanMed'), closed:m('closed'), scored:m('scored'), sent:m('sent'),
+      qaResComp:m('qaResComp'), qaComm:m('qaComm'), qaLang:m('qaLang'), messagesSent:m('messagesSent') };
   });
 }
 function getSelectedSeries(agent){
@@ -339,14 +365,18 @@ function getSelectedSeries(agent){
 }
 // ---- RENDER: KPIs --------------------------------------------------------
 function renderKpis(fromIdx,toIdx,agent){
+  renderKpiGroup(METRICS,'kpiRow',fromIdx,toIdx,agent);
+  renderKpiGroup(QA_METRICS,'qaKpiRow',fromIdx,toIdx,agent);
+}
+function renderKpiGroup(metricsArr, containerId, fromIdx,toIdx,agent){
   const selected = getSelectedSeries(agent);
   const range = selected.slice(fromIdx,toIdx+1);
   const rangeLen = range.length;
   const prevStart = fromIdx-rangeLen;
   const prevRange = prevStart>=0 ? selected.slice(prevStart,fromIdx) : [];
   const teamRange = teamAvgSeries.slice(fromIdx,toIdx+1);
-  const kpiRow = document.getElementById('kpiRow');
-  kpiRow.innerHTML = METRICS.map(cfg=>{
+  const kpiRow = document.getElementById(containerId);
+  kpiRow.innerHTML = metricsArr.map(cfg=>{
     const suffix = rangeLen>1 ? (cfg.agg==='mean' ? ' (avg)' : ' (total)') : '';
     return `<div class="kpi" id="kpi-${cfg.key}">
       <div class="label">${cfg.label}${suffix}</div>
@@ -358,7 +388,7 @@ function renderKpis(fromIdx,toIdx,agent){
       <div class="samplewarn" id="samplewarn-${cfg.key}"></div>
     </div>`;
   }).join('');
-  METRICS.forEach(cfg=>{
+  metricsArr.forEach(cfg=>{
     const curr = aggregateMetricOverRange(range, cfg.key, cfg.agg);
     const prev = prevRange.length ? aggregateMetricOverRange(prevRange, cfg.key, cfg.agg) : null;
     const teamCurr = aggregateMetricOverRange(teamRange, cfg.key, cfg.agg);
@@ -383,7 +413,7 @@ function renderKpis(fromIdx,toIdx,agent){
       document.getElementById('sub-csatPct').textContent = (scored!==null&&sent!==null) ? `${Math.round(scored)} of ${Math.round(sent)} surveys scored` : '';
     }
     // Consistency: how much this metric swung week to week over the selected range (masked by the average alone).
-    if(['csatAvg','resAvg','humanAvg'].includes(cfg.key)){
+    if(['csatAvg','resAvg','humanAvg','qaResComp','qaComm','qaLang'].includes(cfg.key)){
       const mm = rangeMinMax(range, cfg.key);
       document.getElementById(`consistency-${cfg.key}`).textContent = mm ? `range ${fmt(mm.min,cfg.decimals)}–${fmt(mm.max,cfg.decimals)}` : '';
     }
@@ -449,11 +479,37 @@ function renderTrends(fromIdx,toIdx,agent){
     options:{ responsive:true, plugins:{ legend:{ position:'top', align:'end', labels:{ boxWidth:10, usePointStyle:true, color:p.soft } } },
       scales:{ y:{ beginAtZero:true, grid:{ color:p.line }, ticks:{ color:p.soft } }, x:{ grid:{ display:false }, ticks:{ ...thinTicks(), color:p.soft } } } }
   });
+  destroyChart('messages');
+  const messagesDatasets = [{ label:selName, data:selRange.map(r=>r?r.messagesSent:null), borderColor:p.rust, backgroundColor:p.rust, tension:.25, pointRadius:2 }];
+  if(agent!=='ALL'){
+    // Same reasoning as tickets closed: "All agents (blended)" is a team total, a per-agent average isn't
+    // a fair comparison against it, so only benchmark against team average for a single agent.
+    messagesDatasets.push({ label:'Team average (per agent)', data:teamRange.map(r=>r?r.messagesSent:null), borderColor:p.soft, borderDash:[5,4], backgroundColor:p.soft, tension:.25, pointRadius:0, borderWidth:1.5 });
+  }
+  charts.messages = new Chart(document.getElementById('messagesChart'), {
+    type:'line',
+    data:{ labels, datasets:messagesDatasets },
+    options:{ responsive:true, plugins:{ legend:{ position:'top', align:'end', labels:{ boxWidth:10, usePointStyle:true, color:p.soft } } },
+      scales:{ y:{ beginAtZero:true, grid:{ color:p.line }, ticks:{ color:p.soft } }, x:{ grid:{ display:false }, ticks:{ ...thinTicks(), color:p.soft } } } }
+  });
+  destroyChart('messagesVsClosed');
+  charts.messagesVsClosed = new Chart(document.getElementById('messagesVsClosedChart'), {
+    data:{ labels, datasets:[
+      { type:'bar', label:'Messages sent', data:selRange.map(r=>r?r.messagesSent:null), backgroundColor:p.rust, order:2 },
+      { type:'line', label:'Tickets closed', data:selRange.map(r=>r?r.closed:null), borderColor:p.accent, backgroundColor:p.accent, tension:.25, pointRadius:2, yAxisID:'y1', order:1 },
+    ]},
+    options:{ responsive:true, plugins:{ legend:{ position:'top', align:'end', labels:{ boxWidth:10, usePointStyle:true, color:p.soft } } },
+      scales:{
+        y:{ beginAtZero:true, grid:{ color:p.line }, ticks:{ color:p.soft } },
+        y1:{ beginAtZero:true, position:'right', grid:{ display:false }, ticks:{ color:p.soft } },
+        x:{ grid:{ display:false }, ticks:{ ...thinTicks(), color:p.soft } },
+      } }
+  });
 }
 // ---- RENDER: LEADERBOARD --------------------------------------------------
 function renderLeaderboardToggle(){
   const wrap = document.getElementById('lbToggle');
-  wrap.innerHTML = METRICS.map(m=>`<button data-metric="${m.key}" class="${m.key===lbMetric?'active':''}">${m.label}</button>`).join('');
+  wrap.innerHTML = [...METRICS, ...QA_METRICS].map(m=>`<button data-metric="${m.key}" class="${m.key===lbMetric?'active':''}">${m.label}</button>`).join('');
   wrap.querySelectorAll('button').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       wrap.querySelectorAll('button').forEach(b=>b.classList.remove('active'));
@@ -467,7 +523,7 @@ function renderLeaderboardToggle(){
 }
 function renderLeaderboard(fromIdx,toIdx,selectedAgent){
   const p = palette();
-  const cfg = METRICS.find(m=>m.key===lbMetric);
+  const cfg = [...METRICS, ...QA_METRICS].find(m=>m.key===lbMetric);
   const perAgent = agentsList.map(a=>{
     const series = getSelectedSeries(a).slice(fromIdx,toIdx+1);
     return { agent:a, value: aggregateMetricOverRange(series, cfg.key, cfg.agg) };
@@ -553,10 +609,10 @@ async function exportCsv(){
   const agent = document.getElementById('agentFilter').value;
   const selected = getSelectedSeries(agent).slice(fromIdx,toIdx+1);
   const weeks = weeksList.slice(fromIdx,toIdx+1);
-  const headers = ['ISO week','Week start','Agent','CSAT score','CSAT satisfaction %','Resolution avg (hrs)','Resolution median (hrs)','Human response avg (hrs)','Human response median (hrs)','Surveys scored','Surveys sent','Tickets closed'];
+  const headers = ['ISO week','Week start','Agent','CSAT score','CSAT satisfaction %','Resolution avg (hrs)','Resolution median (hrs)','Human response avg (hrs)','Human response median (hrs)','Surveys scored','Surveys sent','Tickets closed','Messages sent','QA - Resolution completeness (%)','QA - Communication skills (1-5)','QA - Language proficiency (1-5)'];
   const rows = weeks.map((w,i)=>{
     const r = selected[i] || {};
-    return [w.iso, w.label, agent, r.csatAvg, r.csatPct, r.resAvg, r.resMed, r.humanAvg, r.humanMed, r.scored, r.sent, r.closed];
+    return [w.iso, w.label, agent, r.csatAvg, r.csatPct, r.resAvg, r.resMed, r.humanAvg, r.humanMed, r.scored, r.sent, r.closed, r.messagesSent, r.qaResComp, r.qaComm, r.qaLang];
   });
   const csvRows = [headers.join(',')].concat(rows.map(r=>r.map(v=>`"${String(v??'').replace(/"/g,'""')}"`).join(',')));
   const filename = `ekster-cs-individual-performance_${agent.replace(/\s+/g,'-')}_${weeks[0].label.replace(/\//g,'-')}_to_${weeks[weeks.length-1].label.replace(/\//g,'-')}.csv`;
@@ -633,6 +689,10 @@ async function init(){
       humanMed: toNumber(r['Human response time - median (hrs)']),
       humanAvg: toNumber(r['Human response time - average (hrs)']),
       closed: toNumber(r['Tickets closed']),
+      qaResComp: toPercent(r['QA - Resolution completeness (%)']),
+      qaComm: toNumber(r['QA - Communication skills (1-5)']),
+      qaLang: toNumber(r['QA - Language proficiency (1-5)']),
+      messagesSent: toNumber(r['Messages sent']),
     })).filter(r=>r.agent && r.weekStart);
 
     agentsList = Array.from(new Set(normalizedRows.map(r=>r.agent))).sort();
