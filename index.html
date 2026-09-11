@@ -94,6 +94,11 @@
   .status-dot.good{ background: var(--green); }
   .status-dot.bad{ background: var(--rust); }
   table.data-table td.csat-cell{ display:flex; align-items:center; justify-content:flex-end; }
+  #analysisPanel{ margin-bottom: 28px; }
+  .analysis-list{ margin:0; padding-left: 0; list-style:none; display:flex; flex-direction:column; gap: 10px; }
+  .analysis-list li{ font-size: 13px; line-height: 1.55; color: var(--ink); display:flex; align-items:flex-start; gap: 8px; }
+  .analysis-list li .status-dot{ margin-top: 5px; }
+  .analysis-list li .fact-label{ font-weight: 600; }
   section{ margin-bottom: 44px; }
   .section-head{ display:flex; align-items:baseline; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
   h2{ font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 18px; margin: 0; }
@@ -180,7 +185,20 @@
       <select id="agentFilter"><option>Loading agents…</option></select>
     </div>
     <div class="spacer"></div>
+    <button id="analysisToggle" class="icon-btn-text">Analysis ▾</button>
     <button id="resetFiltersBtn" class="icon-btn-text">Reset filters</button>
+  </div>
+
+  <div class="panel" id="analysisPanel" hidden>
+    <div class="section-head">
+      <h2 id="analysisTitle" style="font-size:15px;">Analysis</h2>
+      <div class="section-note">Auto-generated from the numbers above — not a substitute for reading the tickets</div>
+    </div>
+    <ul class="analysis-list" id="analysisList"></ul>
+    <div id="aiSummaryWrap" hidden style="margin-top:14px; padding-top:14px; border-top:1px dashed var(--line);">
+      <div id="aiSummaryText" class="sub" style="font-size:13px; line-height:1.6;"></div>
+    </div>
+    <button id="aiSummaryBtn" class="icon-btn-text" style="margin-top:14px;" hidden>✨ Ask Claude to summarize this</button>
   </div>
 
   <div class="kpi-row" id="kpiRow"></div>
@@ -587,6 +605,103 @@ function renderWeeklyTable(fromIdx,toIdx,agent){
   </tr>`;
   tbody.innerHTML = rowsHtml + totalRow;
 }
+// ---- RENDER: ANALYSIS -------------------------------------------------------
+const CONSISTENCY_SWING_THRESHOLD = 0.15; // (max-min)/mean over the range — above this, call it "inconsistent"
+const NOTABLE_WOW_PCT = 5;   // week-over-week move worth mentioning
+const NOTABLE_VSTEAM_PCT = 8; // gap vs team average worth mentioning
+function agentRankingForRange(cfg, fromIdx, toIdx){
+  return agentsList.map(a=>{
+    const series = getSelectedSeries(a).slice(fromIdx,toIdx+1);
+    return { agent:a, value: aggregateMetricOverRange(series, cfg.key, cfg.agg) };
+  }).filter(r=>r.value!==null).sort((a,b)=> cfg.higherIsBetter===false ? a.value-b.value : b.value-a.value);
+}
+function buildAnalysisFacts(fromIdx,toIdx,agent){
+  const selected = getSelectedSeries(agent);
+  const range = selected.slice(fromIdx,toIdx+1);
+  const rangeLen = range.length;
+  const prevStart = fromIdx-rangeLen;
+  const prevRange = prevStart>=0 ? selected.slice(prevStart,fromIdx) : [];
+  const teamRange = teamAvgSeries.slice(fromIdx,toIdx+1);
+  const allMetrics = [...METRICS, ...QA_METRICS];
+  const facts = []; // {text, status: 'good'|'bad'|null, weight: number (for ranking)}
+
+  allMetrics.forEach(cfg=>{
+    const curr = aggregateMetricOverRange(range, cfg.key, cfg.agg);
+    const prev = prevRange.length ? aggregateMetricOverRange(prevRange, cfg.key, cfg.agg) : null;
+    const teamCurr = aggregateMetricOverRange(teamRange, cfg.key, cfg.agg);
+    if(curr===null) return;
+    // Week-over-week move
+    if(prev!==null && prev!==undefined && prev!==0){
+      const pct = ((curr-prev)/Math.abs(prev))*100;
+      if(Math.abs(pct)>=NOTABLE_WOW_PCT){
+        const dir = pct>0 ? 'up' : 'down';
+        const isGood = cfg.higherIsBetter===null ? null : (cfg.higherIsBetter ? pct>0 : pct<0);
+        facts.push({
+          text: `<span class="fact-label">${cfg.label}</span> is ${fmt(curr,cfg.decimals)}${cfg.unit}, ${dir} ${fmt(Math.abs(pct),1)}% from the previous range (${fmt(prev,cfg.decimals)}${cfg.unit}).`,
+          status: isGood===null ? null : (isGood?'good':'bad'), weight: Math.abs(pct),
+        });
+      }
+    }
+    // vs team average (only meaningful for a single agent, not the blended "all")
+    if(agent!=='ALL' && teamCurr!==null && teamCurr!==undefined && teamCurr!==0){
+      const diff = curr-teamCurr; const pct = (diff/Math.abs(teamCurr))*100;
+      if(Math.abs(pct)>=NOTABLE_VSTEAM_PCT){
+        const dir = diff>0 ? 'above' : 'below';
+        const isGood = cfg.higherIsBetter===null ? null : (cfg.higherIsBetter ? diff>0 : diff<0);
+        facts.push({
+          text: `<span class="fact-label">${cfg.label}</span> is ${fmt(Math.abs(pct),1)}% ${dir} the team average (${fmt(teamCurr,cfg.decimals)}${cfg.unit} vs ${fmt(curr,cfg.decimals)}${cfg.unit}).`,
+          status: isGood===null ? null : (isGood?'good':'bad'), weight: Math.abs(pct)*0.8,
+        });
+      }
+    }
+    // Consistency swing within the range
+    if(['csatAvg','resAvg','humanAvg','qaResComp','qaComm','qaLang'].includes(cfg.key)){
+      const mm = rangeMinMax(range, cfg.key);
+      if(mm && curr){
+        const swing = (mm.max-mm.min)/Math.abs(curr);
+        if(swing>=CONSISTENCY_SWING_THRESHOLD){
+          facts.push({
+            text: `<span class="fact-label">${cfg.label}</span> swung between ${fmt(mm.min,cfg.decimals)}${cfg.unit} and ${fmt(mm.max,cfg.decimals)}${cfg.unit} across the selected weeks — inconsistent rather than steady.`,
+            status: 'bad', weight: swing*40,
+          });
+        }
+      }
+    }
+  });
+  // Low-sample warning for CSAT
+  const scoredTotal = aggregateMetricOverRange(range,'scored','sum');
+  if(scoredTotal!==null && scoredTotal>0 && scoredTotal<LOW_SAMPLE_THRESHOLD){
+    facts.push({ text:`CSAT figures are based on only ${Math.round(scoredTotal)} scored survey${scoredTotal===1?'':'s'} this range — treat them as a small-sample signal, not a solid read.`, status:'bad', weight: 30 });
+  }
+  // For the blended "All Agents" view, surface the spread between the best and worst agent on a couple of headline metrics.
+  if(agent==='ALL'){
+    [METRICS[0], METRICS[2], QA_METRICS[0]].forEach(cfg=>{ // CSAT score, Resolution time, QA resolution completeness
+      const ranking = agentRankingForRange(cfg, fromIdx, toIdx);
+      if(ranking.length>=2){
+        const best = ranking[0], worst = ranking[ranking.length-1];
+        if(best.agent!==worst.agent){
+          facts.push({
+            text: `On <span class="fact-label">${cfg.label}</span>, ${best.agent} leads at ${fmt(best.value,cfg.decimals)}${cfg.unit} while ${worst.agent} trails at ${fmt(worst.value,cfg.decimals)}${cfg.unit}.`,
+            status: null, weight: 15,
+          });
+        }
+      }
+    });
+  }
+  facts.sort((a,b)=>b.weight-a.weight);
+  return facts.slice(0,8);
+}
+function renderAnalysis(fromIdx,toIdx,agent){
+  const selName = agent==='ALL' ? 'All agents (blended)' : agent;
+  document.getElementById('analysisTitle').textContent = `Analysis — ${selName}`;
+  const facts = buildAnalysisFacts(fromIdx,toIdx,agent);
+  const list = document.getElementById('analysisList');
+  if(!facts.length){
+    list.innerHTML = `<li>Nothing stands out this range — metrics are close to the previous period and to the team average.</li>`;
+    return;
+  }
+  list.innerHTML = facts.map(f=>`<li>${f.status ? `<span class="status-dot ${f.status}"></span>` : ''}${f.text}</li>`).join('');
+}
 // ---- MAIN RENDER -----------------------------------------------------------
 function renderAll(){
   const fromIdx = Number(document.getElementById('fromFilter').value);
@@ -596,6 +711,9 @@ function renderAll(){
   renderTrends(fromIdx,toIdx,agent);
   renderLeaderboard(fromIdx,toIdx,agent);
   renderWeeklyTable(fromIdx,toIdx,agent);
+  renderAnalysis(fromIdx,toIdx,agent);
+  document.getElementById('aiSummaryWrap').hidden = true;
+  document.getElementById('aiSummaryText').textContent = '';
 }
 let downloadsNS = null;
 if (window.claude && typeof window.claude.use === 'function'){
@@ -604,6 +722,40 @@ if (window.claude && typeof window.claude.use === 'function'){
     const btn = document.getElementById('exportCsv');
     if (btn && !ns) btn.style.display = 'none';
   }).catch(()=>{});
+}
+let sampleNS = null;
+if (window.claude && typeof window.claude.use === 'function'){
+  window.claude.use('sample').then(ns => {
+    sampleNS = ns;
+    document.getElementById('aiSummaryBtn').hidden = !ns;
+  }).catch(()=>{ document.getElementById('aiSummaryBtn').hidden = true; });
+}
+async function requestAiSummary(){
+  if(!sampleNS) return;
+  const btn = document.getElementById('aiSummaryBtn');
+  const wrap = document.getElementById('aiSummaryWrap');
+  const textEl = document.getElementById('aiSummaryText');
+  const fromIdx = Number(document.getElementById('fromFilter').value);
+  const toIdx = Number(document.getElementById('toFilter').value);
+  const agent = document.getElementById('agentFilter').value;
+  const selName = agent==='ALL' ? 'All agents (blended)' : agent;
+  const facts = buildAnalysisFacts(fromIdx,toIdx,agent).map(f=>f.text.replace(/<[^>]+>/g,''));
+  if(!facts.length){
+    wrap.hidden = false; textEl.textContent = 'Nothing notable to summarize this range.';
+    return;
+  }
+  btn.disabled = true; btn.textContent = 'Asking Claude…';
+  wrap.hidden = false; textEl.textContent = '';
+  try{
+    const prompt = `You are writing a short internal note for a customer support ops manager reviewing "${selName}" for ${weeksList[fromIdx].label}–${weeksList[toIdx].label}. `
+      + `Based ONLY on these computed facts (do not invent numbers not listed here), write 2-4 tight sentences of plain-English analysis, noting what matters most and any risk worth flagging. No headers, no bullet points, just prose.\n\nFacts:\n- ${facts.join('\n- ')}`;
+    const result = await sampleNS(prompt, { onText: ({text}) => { textEl.textContent = text; } });
+    textEl.textContent = result.text;
+  }catch(err){
+    textEl.textContent = (err && err.code==='not_granted') ? 'AI summary isn\'t available in this view.' : 'Could not get an AI summary right now.';
+  }finally{
+    btn.disabled = false; btn.textContent = '✨ Ask Claude to summarize this';
+  }
 }
 async function exportCsv(){
   const fromIdx = Number(document.getElementById('fromFilter').value);
@@ -715,6 +867,12 @@ async function init(){
 
     document.getElementById('exportPdf').addEventListener('click', ()=>window.print());
     document.getElementById('exportCsv').addEventListener('click', exportCsv);
+    document.getElementById('analysisToggle').addEventListener('click', ()=>{
+      const panel = document.getElementById('analysisPanel');
+      panel.hidden = !panel.hidden;
+      document.getElementById('analysisToggle').textContent = panel.hidden ? 'Analysis ▾' : 'Analysis ▴';
+    });
+    document.getElementById('aiSummaryBtn').addEventListener('click', requestAiSummary);
     document.getElementById('resetFiltersBtn').addEventListener('click', ()=>{
       document.getElementById('fromFilter').value = weeksList.length-1;
       document.getElementById('toFilter').value = weeksList.length-1;
