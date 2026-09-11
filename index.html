@@ -184,7 +184,7 @@
     </div>
     <div class="chart-grid">
       <div class="chart-box"><h3>CSAT score (1–5)</h3><canvas id="csatAvgChart"></canvas></div>
-      <div class="chart-box"><h3>CSAT satisfaction rate</h3><canvas id="csatPctChart"></canvas></div>
+      <div class="chart-box"><h3>Tickets closed</h3><canvas id="closedChart"></canvas></div>
       <div class="chart-box"><h3>Resolution time (hrs)</h3><canvas id="resChart"></canvas></div>
       <div class="chart-box"><h3>Human response time (hrs)</h3><canvas id="humanChart"></canvas></div>
     </div>
@@ -383,15 +383,18 @@ function renderTrends(fromIdx,toIdx,agent){
     options:{ responsive:true, plugins:{ legend:{ position:'top', align:'end', labels:{ boxWidth:10, usePointStyle:true, color:p.soft } } },
       scales:{ y:{ min:1, max:5, grid:{ color:p.line }, ticks:{ color:p.soft } }, x:{ grid:{ display:false }, ticks:{ ...thinTicks(), color:p.soft } } } }
   });
-  destroyChart('csatPct');
-  charts.csatPct = new Chart(document.getElementById('csatPctChart'), {
+  destroyChart('closed');
+  const closedDatasets = [{ label:selName, data:selRange.map(r=>r?r.closed:null), borderColor:p.gold, backgroundColor:p.gold, tension:.25, pointRadius:2 }];
+  if(agent!=='ALL'){
+    // "All agents (blended)" totals the whole team's tickets, so a per-agent team-average line
+    // isn't a meaningful benchmark there — only show it when looking at one agent.
+    closedDatasets.push({ label:'Team average (per agent)', data:teamRange.map(r=>r?r.closed:null), borderColor:p.soft, borderDash:[5,4], backgroundColor:p.soft, tension:.25, pointRadius:0, borderWidth:1.5 });
+  }
+  charts.closed = new Chart(document.getElementById('closedChart'), {
     type:'line',
-    data:{ labels, datasets:[
-      { label:selName, data:selRange.map(r=>r?r.csatPct:null), borderColor:p.gold, backgroundColor:p.gold, tension:.25, pointRadius:2 },
-      { label:'Team average', data:teamRange.map(r=>r?r.csatPct:null), borderColor:p.soft, borderDash:[5,4], backgroundColor:p.soft, tension:.25, pointRadius:0, borderWidth:1.5 },
-    ]},
+    data:{ labels, datasets:closedDatasets },
     options:{ responsive:true, plugins:{ legend:{ position:'top', align:'end', labels:{ boxWidth:10, usePointStyle:true, color:p.soft } } },
-      scales:{ y:{ min:0, max:100, grid:{ color:p.line }, ticks:{ color:p.soft } }, x:{ grid:{ display:false }, ticks:{ ...thinTicks(), color:p.soft } } } }
+      scales:{ y:{ beginAtZero:true, grid:{ color:p.line }, ticks:{ color:p.soft } }, x:{ grid:{ display:false }, ticks:{ ...thinTicks(), color:p.soft } } } }
   });
   destroyChart('res');
   charts.res = new Chart(document.getElementById('resChart'), {
