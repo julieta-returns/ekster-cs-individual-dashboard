@@ -8,28 +8,30 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg: #F6F3EE;
+    /* Ekster brand palette — primary: #2C2523 (ink), #EEEEEE (light), #87040C (red accent)
+       secondary: #D5D5D5, #A9A9A9, #B8A888, #4B4B4B */
+    --bg: #EEEEEE;
     --panel: #FFFFFF;
-    --ink: #211D1A;
-    --ink-soft: #5B554C;
-    --line: #E3DDD1;
-    --accent: #35473D;
-    --gold: #AD8A52;
-    --rust: #A85C43;
+    --ink: #2C2523;
+    --ink-soft: #6B625C;
+    --line: #D5D5D5;
+    --accent: #87040C;
+    --gold: #B8A888;
+    --rust: #B4472F;
     --green: #3F7A4F;
-    --muted-bar: #C9BFA8;
+    --muted-bar: #A9A9A9;
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
-      --bg: #17181A; --panel: #212225; --ink: #F1EFEA; --ink-soft: #A6A199;
-      --line: #34363A; --accent: #7FB88F; --gold: #D6B679; --rust: #E08C74; --green: #7FB88F;
-      --muted-bar: #4A4A45;
+      --bg: #201B19; --panel: #2C2523; --ink: #EEEEEE; --ink-soft: #A9A9A9;
+      --line: #4B4B4B; --accent: #E2574A; --gold: #CBBFA0; --rust: #E2725B; --green: #7FB88F;
+      --muted-bar: #5C5C59;
     }
   }
   :root[data-theme="dark"]{
-    --bg: #17181A; --panel: #212225; --ink: #F1EFEA; --ink-soft: #A6A199;
-    --line: #34363A; --accent: #7FB88F; --gold: #D6B679; --rust: #E08C74; --green: #7FB88F;
-    --muted-bar: #4A4A45;
+    --bg: #201B19; --panel: #2C2523; --ink: #EEEEEE; --ink-soft: #A9A9A9;
+    --line: #4B4B4B; --accent: #E2574A; --gold: #CBBFA0; --rust: #E2725B; --green: #7FB88F;
+    --muted-bar: #5C5C59;
   }
   *{ box-sizing: border-box; }
   body{
@@ -133,7 +135,7 @@
   }
   @media print {
     .header-actions, #themeToggle, .controls-row, .field-toggle, .floating-actions, .info-icon { display:none !important; }
-    html[data-theme="dark"]{ --bg:#F6F3EE; --panel:#fff; --ink:#211D1A; --ink-soft:#5B554C; --line:#E3DDD1; }
+    html[data-theme="dark"]{ --bg:#EEEEEE; --panel:#fff; --ink:#2C2523; --ink-soft:#6B625C; --line:#D5D5D5; }
     body{ background:#fff; }
     .kpi, .chart-box, .panel{ break-inside: avoid; }
   }
