@@ -86,6 +86,12 @@
   .kpi .vsteam.bad{ color: var(--rust); }
   .kpi .vsteam.flat{ color: var(--ink-soft); }
   .kpi .sub{ font-size: 11px; color: var(--ink-soft); margin-top: 4px; }
+  .kpi .consistency{ font-size: 11px; color: var(--ink-soft); margin-top: 2px; }
+  .kpi .samplewarn{ font-size: 11px; color: var(--rust); margin-top: 4px; font-weight: 600; }
+  .status-dot{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; flex-shrink:0; }
+  .status-dot.good{ background: var(--green); }
+  .status-dot.bad{ background: var(--rust); }
+  table.data-table td.csat-cell{ display:flex; align-items:center; justify-content:flex-end; }
   section{ margin-bottom: 44px; }
   .section-head{ display:flex; align-items:baseline; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
   h2{ font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 18px; margin: 0; }
@@ -207,6 +213,7 @@
   <section id="weeklySection">
     <div class="section-head">
       <h2 id="weeklyTitle">Weekly breakdown</h2>
+      <div class="section-note"><span class="status-dot good" style="margin-right:4px"></span>CSAT ≥ 4.5&nbsp;&nbsp;<span class="status-dot bad" style="margin-right:4px"></span>CSAT &lt; 4.5</div>
     </div>
     <div class="panel table-scroll">
       <table class="data-table" id="weeklyTable">
@@ -280,6 +287,19 @@ function aggregateArray(values, mode){
 function aggregateMetricOverRange(series, metricKey, mode){
   return aggregateArray(series.map(r=>r?r[metricKey]:null), mode);
 }
+const CSAT_GOOD_THRESHOLD = 4.5;
+const LOW_SAMPLE_THRESHOLD = 5; // fewer scored surveys than this over the range = flag it
+function rangeMinMax(series, metricKey){
+  const vals = series.map(r=>r?r[metricKey]:null).filter(v=>v!==null&&v!==undefined&&!isNaN(v));
+  if(vals.length<2) return null;
+  return { min:Math.min(...vals), max:Math.max(...vals) };
+}
+function csatDot(value){
+  if(value===null||value===undefined||isNaN(value)) return '';
+  const cls = value>=CSAT_GOOD_THRESHOLD ? 'good' : 'bad';
+  const title = value>=CSAT_GOOD_THRESHOLD ? `${fmt(value,2)} — at or above ${CSAT_GOOD_THRESHOLD} target` : `${fmt(value,2)} — below ${CSAT_GOOD_THRESHOLD} target`;
+  return `<span class="status-dot ${cls}" title="${title}"></span>`;
+}
 function buildAllAggSeries(){
   return weeksList.map(w=>{
     const rows = agentsList.map(a=>rowsByWeekAgent[w.key]?.[a]).filter(Boolean);
@@ -334,6 +354,8 @@ function renderKpis(fromIdx,toIdx,agent){
       <div id="wow-${cfg.key}"></div>
       <div id="vsteam-${cfg.key}"></div>
       <div class="sub" id="sub-${cfg.key}"></div>
+      <div class="consistency" id="consistency-${cfg.key}"></div>
+      <div class="samplewarn" id="samplewarn-${cfg.key}"></div>
     </div>`;
   }).join('');
   METRICS.forEach(cfg=>{
@@ -359,6 +381,17 @@ function renderKpis(fromIdx,toIdx,agent){
       const scored = aggregateMetricOverRange(range,'scored','sum');
       const sent = aggregateMetricOverRange(range,'sent','sum');
       document.getElementById('sub-csatPct').textContent = (scored!==null&&sent!==null) ? `${Math.round(scored)} of ${Math.round(sent)} surveys scored` : '';
+    }
+    // Consistency: how much this metric swung week to week over the selected range (masked by the average alone).
+    if(['csatAvg','resAvg','humanAvg'].includes(cfg.key)){
+      const mm = rangeMinMax(range, cfg.key);
+      document.getElementById(`consistency-${cfg.key}`).textContent = mm ? `range ${fmt(mm.min,cfg.decimals)}–${fmt(mm.max,cfg.decimals)}` : '';
+    }
+    // Low-sample warning: a CSAT figure built on very few scored surveys is noisy, flag it rather than let it read as solid.
+    if((cfg.key==='csatAvg'||cfg.key==='csatPct')){
+      const scoredTotal = aggregateMetricOverRange(range,'scored','sum');
+      document.getElementById(`samplewarn-${cfg.key}`).textContent = (scoredTotal!==null && scoredTotal>0 && scoredTotal<LOW_SAMPLE_THRESHOLD)
+        ? `⚠ low sample (${Math.round(scoredTotal)} survey${scoredTotal===1?'':'s'})` : '';
     }
   });
 }
@@ -468,7 +501,7 @@ function renderWeeklyTable(fromIdx,toIdx,agent){
     if(!r) return `<tr><td>Week ${w.iso} · ${w.label}</td><td colspan="7" style="color:var(--ink-soft)">no data</td></tr>`;
     return `<tr>
       <td>Week ${w.iso} · ${w.label}</td>
-      <td>${fmt(r.csatAvg,2)}</td>
+      <td class="csat-cell">${csatDot(r.csatAvg)}${fmt(r.csatAvg,2)}</td>
       <td>${fmt(r.csatPct,1)}%</td>
       <td>${fmt(r.resAvg,1)} / ${fmt(r.resMed,1)}</td>
       <td>${fmt(r.humanAvg,1)} / ${fmt(r.humanMed,1)}</td>
@@ -487,7 +520,7 @@ function renderWeeklyTable(fromIdx,toIdx,agent){
   const totalClosed = aggregateMetricOverRange(range,'closed','sum');
   const totalRow = `<tr class="total-row">
     <td>Range average / total</td>
-    <td>${fmt(totalCsatAvg,2)}</td>
+    <td class="csat-cell">${csatDot(totalCsatAvg)}${fmt(totalCsatAvg,2)}</td>
     <td>${fmt(totalCsatPct,1)}%</td>
     <td>${fmt(totalResAvg,1)} / ${fmt(totalResMed,1)}</td>
     <td>${fmt(totalHumanAvg,1)} / ${fmt(totalHumanMed,1)}</td>
